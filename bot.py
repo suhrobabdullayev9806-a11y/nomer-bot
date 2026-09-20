@@ -101,6 +101,16 @@ def build_btn(text, icon=None):
     return types.KeyboardButton(text=f"{icon} {text}" if icon else text)
 
 
+T_GET = f"{ICONS['phone']} Nomer olish"
+T_MENU = f"{ICONS['cart']} Menyu"
+A_ADD = f"{ICONS['new']} Nomer qo'shish"
+A_DEL = f"{ICONS['trash']} Nomer o'chirish"
+A_SELL = f"{ICONS['seller']} Sotuvchi username"
+A_STATS = f"{ICONS['chart']} Statistika"
+A_ADDADMIN = f"{ICONS['crown']} Admin qo'shish"
+A_MENU = f"{ICONS['menu']} Menyu"
+
+
 def user_menu_kb():
     return ReplyKeyboardMarkup(keyboard=[
         [build_btn("Nomer olish", icon=ICONS["phone"]),
@@ -113,8 +123,9 @@ def admin_menu_kb():
         [build_btn("Nomer qo'shish", icon=ICONS["new"]),
          build_btn("Nomer o'chirish", icon=ICONS["trash"])],
         [build_btn("Sotuvchi username", icon=ICONS["seller"]),
-         build_btn("Statistika", icon=ICONS["chart"])],
-        [build_btn("Menyu", icon=ICONS["menu"])],
+         build_btn("Admin qo'shish", icon=ICONS["crown"])],
+        [build_btn("Statistika", icon=ICONS["chart"]),
+         build_btn("Menyu", icon=ICONS["menu"])],
     ], resize_keyboard=True)
 
 
@@ -124,15 +135,21 @@ def cancel_kb():
     ])
 
 
+def countries_list():
+    seen = []
+    for n in numbers.values():
+        if n["status"] == "active" and n["country"] not in seen:
+            seen.append(n["country"])
+    return seen
+
+
 def countries_ikb():
     btns = []
-    seen = set()
-    for n in numbers.values():
-        if n["country"] not in seen:
-            seen.add(n["country"])
-            btns.append([InlineKeyboardButton(
-                text=f"{ICONS['globe']} {n['country']} ({n['country_count']} ta)",
-                callback_data=f"cnt:{n['country']}")])
+    for i, c in enumerate(countries_list()):
+        count = sum(1 for n in numbers.values() if n["country"] == c and n["status"] == "active")
+        btns.append([InlineKeyboardButton(
+            text=f"{ICONS['globe']} {c} ({count} ta)",
+            callback_data=f"cnt:{i}")])
     return InlineKeyboardMarkup(inline_keyboard=btns) if btns else None
 
 
@@ -153,6 +170,10 @@ class DeleteNumberFSM(StatesGroup):
 
 class SellerFSM(StatesGroup):
     username = State()
+
+
+class AddAdminFSM(StatesGroup):
+    uid = State()
 
 
 numbers = {}
@@ -215,7 +236,7 @@ async def cmd_start(message: Message, state: FSMContext):
         parse_mode=ParseMode.HTML, reply_markup=user_menu_kb())
 
 
-@router.message(F.text == "Nomer olish")
+@router.message(F.text == T_GET)
 async def nomer_olish(message: Message):
     ck = countries_ikb()
     if not ck:
@@ -236,7 +257,16 @@ async def back_countries(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("cnt:"))
 async def cnt_selected(callback: CallbackQuery):
-    country = callback.data.split(":", 1)[1]
+    try:
+        idx = int(callback.data.split(":", 1)[1])
+        clist = countries_list()
+        if idx < 0 or idx >= len(clist):
+            await callback.answer("Xato!", show_alert=True)
+            return
+        country = clist[idx]
+    except Exception:
+        await callback.answer("Xato!", show_alert=True)
+        return
     kb = number_list_ikb(country)
     if not kb.inline_keyboard or len(kb.inline_keyboard) == 1:
         await callback.answer("Bu davlatda nomer qolmagan!", show_alert=True)
@@ -315,7 +345,7 @@ async def num_reject(callback: CallbackQuery):
     await callback.answer()
 
 
-@router.message(F.text == "Menyu")
+@router.message(F.text == T_MENU)
 async def back_to_main(message: Message):
     await message.answer("\U0001f30c Asosiy menyu", reply_markup=user_menu_kb())
 
@@ -381,7 +411,45 @@ async def admin_panel(message: Message):
         parse_mode=ParseMode.HTML, reply_markup=admin_menu_kb())
 
 
-@router.message(F.text == "Nomer qo'shish")
+@router.message(F.text == A_ADDADMIN)
+async def admin_add_admin(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id, message.from_user.username):
+        return
+    await message.answer(
+        f"{ICONS['crown']} <b>Admin qo'shish</b>\n\n"
+        f"Yangi adminning Telegram <b>ID</b> raqamini yuboring.\n"
+        f"<i>ID olish: @userinfobot ga xabar yuboring</i>",
+        parse_mode=ParseMode.HTML, reply_markup=cancel_kb())
+    await state.set_state(AddAdminFSM.uid)
+
+
+@router.message(AddAdminFSM.uid)
+async def admin_add_admin_input(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id, message.from_user.username):
+        await state.clear()
+        return
+    text = message.text.strip()
+    if not text.isdigit():
+        await message.answer(
+            f"{ICONS['cross']} <b>ID raqam bo'lishi kerak!</b>\n\nQayta yuboring:",
+            parse_mode=ParseMode.HTML)
+        return
+    uid = int(text)
+    if uid == ADMIN_ID:
+        await message.answer(
+            f"{ICONS['cross']} Bu asosiy admin — yana qo'shish shart emas!",
+            parse_mode=ParseMode.HTML, reply_markup=admin_menu_kb())
+        await state.clear()
+        return
+    admin_users.add(uid)
+    await message.answer(
+        f"{ICONS['check']} <b>Admin qo'shildi!</b>\n\n"
+        f"<code>{uid}</code> endi admin hisoblanadi.",
+        parse_mode=ParseMode.HTML, reply_markup=admin_menu_kb())
+    await state.clear()
+
+
+@router.message(F.text == A_ADD)
 async def admin_add(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id, message.from_user.username):
         return
@@ -443,7 +511,7 @@ async def add_price_input(message: Message, state: FSMContext):
         parse_mode=ParseMode.HTML, reply_markup=admin_menu_kb())
 
 
-@router.message(F.text == "Nomer o'chirish")
+@router.message(F.text == A_DEL)
 async def admin_delete(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id, message.from_user.username):
         return
@@ -487,7 +555,7 @@ async def delete_input(message: Message, state: FSMContext):
         parse_mode=ParseMode.HTML, reply_markup=admin_menu_kb())
 
 
-@router.message(F.text == "Sotuvchi username")
+@router.message(F.text == A_SELL)
 async def admin_seller(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id, message.from_user.username):
         return
@@ -518,7 +586,7 @@ async def seller_input(message: Message, state: FSMContext):
         parse_mode=ParseMode.HTML, reply_markup=admin_menu_kb())
 
 
-@router.message(F.text == "Statistika")
+@router.message(F.text == A_STATS)
 async def admin_stats(message: Message):
     if not is_admin(message.from_user.id, message.from_user.username):
         return
